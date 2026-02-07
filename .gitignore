@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.swp
+env-sound_prop/
+*.egg-info/
