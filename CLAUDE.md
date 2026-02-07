@@ -46,7 +46,7 @@ Both are re-exported from `sound_propagation.__init__`.
 
 ### AtmosphericPropagation
 
-**Constructor** takes environmental conditions (temperature, humidity, pressure) and two 3D positions (sound source, recording microphone). It pre-computes humidity-dependent O₂ and N₂ relaxation frequencies on init.
+**Constructor** takes environmental conditions (temperature, humidity, pressure) and two 3D positions (sound source, recording microphone). Position arguments (`source`, `recording`) accept tuples, lists, or `np.ndarray` (shape `(3,)`); a `copy` flag controls whether ndarrays are copied on storage. It pre-computes humidity-dependent O₂ and N₂ relaxation frequencies on init.
 
 **Public methods:**
 - `absorption_coefficient(frequency)` — returns the ISO 9613-1 §6.2 pure-tone absorption coefficient α in **dB/m**

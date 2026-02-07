@@ -11,8 +11,11 @@ source-to-recording axis.
 
 import math
 import warnings
+from collections.abc import Sequence
 
 import numpy as np
+
+Position = tuple[float, float, float] | Sequence[float] | np.ndarray
 
 
 class AtmosphericPropagation:
@@ -27,10 +30,18 @@ class AtmosphericPropagation:
         Relative humidity in percent (0–100).
     pressure_kpa : float or None
         Ambient atmospheric pressure in kPa (default 101.325 if None).
-    source : tuple of float
+    source : tuple, list, or np.ndarray
         (x, y, z) position of the sound source in metres.
-    recording : tuple of float
+    recording : tuple, list, or np.ndarray
         (x, y, z) position of the recording microphone in metres.
+    copy : bool
+        If True, ndarray positions are copied before storing.
+        Lists and tuples are always converted to tuples (new objects).
+        Default False.
+    warn_frequency : bool
+        If True, emit a warning when frequencies passed to
+        ``absorption_coefficient`` fall outside the ISO 9613-1
+        validated range of 50 Hz – 10 kHz.  Default False.
     """
 
     # ISO reference values
@@ -41,13 +52,18 @@ class AtmosphericPropagation:
     # Standard octave-band centre frequencies (Hz)
     OCTAVE_BANDS = np.array([63, 125, 250, 500, 1000, 2000, 4000, 8000])
 
+    # Approximate A-weighting corrections (dB) for OCTAVE_BANDS
+    A_WEIGHT = np.array([-26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 0.9, -1.1])
+
     def __init__(
         self,
         temperature_c: float,
         relative_humidity_pct: float,
         pressure_kpa: float | None = None,
-        source: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        recording: tuple[float, float, float] = (100.0, 0.0, 0.0),
+        source: Position = (0.0, 0.0, 0.0),
+        recording: Position = (100.0, 0.0, 0.0),
+        copy: bool = False,
+        warn_frequency: bool = False,
     ):
         if not 0 < relative_humidity_pct <= 100:
             raise ValueError("relative_humidity_pct must be in (0, 100]")
@@ -57,18 +73,23 @@ class AtmosphericPropagation:
         self.temperature_c = temperature_c
         self.relative_humidity_pct = relative_humidity_pct
         self.pressure_kpa = pressure_kpa
-        self.source = source
-        self.recording = recording
+        self.source = self._validate_position(source, "source", copy)
+        self.recording = self._validate_position(recording, "recording", copy)
+        self._warn_frequency = warn_frequency
 
         self._T = temperature_c + 273.15  # absolute temperature [K]
         self._d_rec = self._distance(source, recording)
-        if self._d_rec == 0.0:
+        if np.isclose(self._d_rec, 0.0):
             raise ValueError("source and recording positions must differ")
 
         # pre-compute humidity-dependent relaxation frequencies
         self._h = self._molar_concentration_h2o()
         self._frO = self._relaxation_freq_oxygen()
         self._frN = self._relaxation_freq_nitrogen()
+
+        # classical + molecular rotational absorption (frequency-independent)
+        pa_pr = self.pressure_kpa / self.P_REF
+        self._alpha_cr = 1.84e-11 * (1.0 / pa_pr) * (self._T / self.T_REF) ** 0.5
 
         # ISO 9613-1 §7 accuracy warnings
         self._check_accuracy_bounds()
@@ -153,8 +174,9 @@ class AtmosphericPropagation:
         Parameters
         ----------
         frequency : float or array_like
-            Sound frequency in Hz (> 0).  Scalars and arrays are both
+            Sound frequency in Hz (≥ 0).  Scalars and arrays are both
             accepted; an array input produces an array output.
+            Zero returns 0 dB/m (no absorption at DC).
 
         Returns
         -------
@@ -162,15 +184,17 @@ class AtmosphericPropagation:
             α in dB per metre, same shape as *frequency*.
         """
         f = np.asarray(frequency, dtype=float)
-        if np.any(f <= 0):
-            raise ValueError("frequency must be positive")
+        if np.any(f < 0):
+            raise ValueError("frequency must be non-negative")
+        if self._warn_frequency and (np.any(f < 50.0) or np.any(f > 10000.0)):
+            warnings.warn(
+                "One or more frequencies are outside the ISO 9613-1 "
+                "validated range [50 Hz, 10 kHz]; results may be inaccurate.",
+                stacklevel=2,
+            )
 
         T = self._T
         T_ratio = T / self.T_REF
-        pa_pr = self.pressure_kpa / self.P_REF
-
-        # Classical + molecular rotational relaxation
-        alpha_cr = 1.84e-11 * (1.0 / pa_pr) * T_ratio ** 0.5
 
         # Vibrational relaxation — oxygen
         alpha_vib_O = (
@@ -187,7 +211,7 @@ class AtmosphericPropagation:
         )
 
         alpha = 8.686 * f ** 2 * (
-            alpha_cr + T_ratio ** (-2.5) * (alpha_vib_O + alpha_vib_N)
+            self._alpha_cr + T_ratio ** (-2.5) * (alpha_vib_O + alpha_vib_N)
         )
 
         return alpha
@@ -248,7 +272,8 @@ class AtmosphericPropagation:
             ``'total_dB'``          – net SPL change (positive = louder),
             ``'atmospheric_dB'``    – contribution from absorption only,
             ``'geometric_dB'``      – contribution from spreading only,
-            ``'distance_to_source'``– distance from source to evaluation point [m].
+            ``'distance_to_source'``– distance from source to evaluation point [m],
+            ``'distance_to_receiver'``– distance from recording to evaluation point [m].
         """
         d_rec = self._d_rec
         d_eval = d_rec + distance_offset
@@ -275,12 +300,13 @@ class AtmosphericPropagation:
             "atmospheric_dB": -delta_absorption,
             "geometric_dB": -delta_geometric,
             "distance_to_source": d_eval,
+            "distance_to_receiver": abs(distance_offset),
         }
 
     def attenuation_at_position(
         self,
         frequency: np.ndarray | float,
-        eval_pos: tuple[float, float, float],
+        eval_pos: Position,
     ) -> dict[str, np.ndarray | float]:
         """Sound-pressure-level change at an arbitrary 3-D position.
 
@@ -296,7 +322,7 @@ class AtmosphericPropagation:
         ----------
         frequency : float or array_like
             Sound frequency in Hz (> 0).
-        eval_pos : tuple of float
+        eval_pos : tuple, list, or np.ndarray
             (x, y, z) position of the evaluation point in metres.
 
         Returns
@@ -305,10 +331,12 @@ class AtmosphericPropagation:
             ``'total_dB'``          – net SPL change (positive = louder),
             ``'atmospheric_dB'``    – contribution from absorption only,
             ``'geometric_dB'``      – contribution from spreading only,
-            ``'distance_to_source'``– distance from source to eval point [m].
+            ``'distance_to_source'``– distance from source to eval point [m],
+            ``'distance_to_receiver'``– distance from recording to eval point [m].
         """
+        eval_pos = self._validate_position(eval_pos, "eval_pos", False)
         d_eval = self._distance(self.source, eval_pos)
-        if d_eval == 0.0:
+        if np.isclose(d_eval, 0.0):
             raise ValueError("evaluation position coincides with the source")
 
         d_rec = self._d_rec
@@ -323,12 +351,13 @@ class AtmosphericPropagation:
             "atmospheric_dB": -delta_absorption,
             "geometric_dB": -delta_geometric,
             "distance_to_source": d_eval,
+            "distance_to_receiver": self._distance(self.recording, eval_pos),
         }
 
     def total_attenuation(
         self,
         frequency: np.ndarray | float,
-        eval_pos: tuple[float, float, float],
+        eval_pos: Position,
         ground: "GroundAttenuation | None" = None,
     ) -> dict[str, np.ndarray | float]:
         """Combined attenuation relative to the recording position.
@@ -342,7 +371,7 @@ class AtmosphericPropagation:
             Sound frequency in Hz (> 0).  When *ground* is provided,
             frequencies must be standard octave-band centre frequencies
             (63, 125, 250, 500, 1000, 2000, 4000, 8000 Hz).
-        eval_pos : tuple of float
+        eval_pos : tuple, list, or np.ndarray
             (x, y, z) position of the evaluation point in metres.
         ground : GroundAttenuation or None, optional
             If provided, its ``ground_attenuation(frequency)`` result is
@@ -356,7 +385,8 @@ class AtmosphericPropagation:
             ``'atmospheric_dB'``    – atmospheric absorption component,
             ``'geometric_dB'``      – geometric spreading component,
             ``'ground_dB'``         – ground attenuation (only if *ground* given),
-            ``'distance_to_source'``– distance from source to eval point [m].
+            ``'distance_to_source'``– distance from source to eval point [m],
+            ``'distance_to_receiver'``– distance from recording to eval point [m].
         """
         result = self.attenuation_at_position(frequency, eval_pos)
         if ground is not None:
@@ -365,13 +395,57 @@ class AtmosphericPropagation:
             result["total_dB"] = result["total_dB"] + agr
         return result
 
+    def a_weighted_attenuation(
+        self,
+        eval_pos: Position,
+        ground: "GroundAttenuation | None" = None,
+    ) -> np.ndarray:
+        """A-weighted total attenuation for the eight standard octave bands.
+
+        Calls :meth:`total_attenuation` with ``OCTAVE_BANDS`` and adds
+        the approximate A-weighting corrections from ``A_WEIGHT``.
+
+        Parameters
+        ----------
+        eval_pos : tuple, list, or np.ndarray
+            (x, y, z) position of the evaluation point in metres.
+        ground : GroundAttenuation or None, optional
+            If provided, ground attenuation is included.
+
+        Returns
+        -------
+        numpy.ndarray
+            A-weighted SPL change in dB, one element per octave band.
+        """
+        result = self.total_attenuation(self.OCTAVE_BANDS, eval_pos, ground=ground)
+        return result["total_dB"] + self.A_WEIGHT
+
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _validate_position(pos, name: str, copy: bool) -> tuple | np.ndarray:
+        if isinstance(pos, np.ndarray):
+            if pos.shape != (3,):
+                raise ValueError(f"{name} must have shape (3,), got {pos.shape}")
+            return pos.copy() if copy else pos
+        pos = tuple(pos)
+        if len(pos) != 3:
+            raise ValueError(f"{name} must have exactly 3 elements, got {len(pos)}")
+        return pos
+
+    @staticmethod
     def _distance(a: tuple, b: tuple) -> float:
         return math.sqrt(sum((ai - bi) ** 2 for ai, bi in zip(a, b)))
+
+    def __call__(
+        self,
+        frequency: np.ndarray | float,
+        eval_pos: Position,
+    ) -> dict[str, np.ndarray | float]:
+        """Shorthand for :meth:`attenuation_at_position`."""
+        return self.attenuation_at_position(frequency, eval_pos)
 
     def __repr__(self) -> str:
         return (

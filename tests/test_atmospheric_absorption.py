@@ -246,6 +246,7 @@ class TestAttenuationAtOffset:
         assert result["total_dB"] == pytest.approx(0.0, abs=1e-12)
         assert result["atmospheric_dB"] == pytest.approx(0.0, abs=1e-12)
         assert result["geometric_dB"] == pytest.approx(0.0, abs=1e-12)
+        assert result["distance_to_receiver"] == pytest.approx(0.0)
 
     def test_positive_offset_attenuates(self):
         """Moving farther from source → total_dB < 0 (quieter)."""
@@ -255,6 +256,7 @@ class TestAttenuationAtOffset:
         assert result["atmospheric_dB"] < 0.0
         assert result["geometric_dB"] < 0.0
         assert result["distance_to_source"] == pytest.approx(250.0)
+        assert result["distance_to_receiver"] == pytest.approx(50.0)
 
     def test_negative_offset_amplifies(self):
         """Moving closer to source → total_dB > 0 (louder)."""
@@ -264,6 +266,7 @@ class TestAttenuationAtOffset:
         assert result["atmospheric_dB"] > 0.0
         assert result["geometric_dB"] > 0.0
         assert result["distance_to_source"] == pytest.approx(150.0)
+        assert result["distance_to_receiver"] == pytest.approx(50.0)
 
     def test_symmetry_of_components(self):
         """atmospheric + geometric must equal total."""
@@ -331,6 +334,18 @@ class TestValidation:
         prop = AtmosphericPropagation(20.0, 50.0)
         with pytest.raises(ValueError):
             prop.absorption_coefficient(np.array([100.0, -50.0, 1000.0]))
+
+    def test_zero_frequency_returns_zero(self):
+        """f=0 gives 0 dB/m absorption (DC has no absorption)."""
+        prop = AtmosphericPropagation(20.0, 50.0)
+        assert prop.absorption_coefficient(0.0) == pytest.approx(0.0, abs=1e-15)
+
+    def test_zero_frequency_in_array(self):
+        """f=0 element in an array returns 0, others are normal."""
+        prop = AtmosphericPropagation(20.0, 50.0)
+        result = prop.absorption_coefficient(np.array([0.0, 1000.0]))
+        assert result[0] == pytest.approx(0.0, abs=1e-15)
+        assert result[1] > 0.0
 
     def test_repr(self):
         prop = AtmosphericPropagation(20.0, 70.0)
@@ -434,6 +449,7 @@ class TestAttenuationAtPosition:
         assert r["atmospheric_dB"] == pytest.approx(0.0, abs=1e-12)
         assert r["geometric_dB"] == pytest.approx(0.0, abs=1e-12)
         assert r["distance_to_source"] == pytest.approx(200.0)
+        assert r["distance_to_receiver"] == pytest.approx(0.0)
 
     def test_on_axis_matches_offset(self):
         """A point on the source→recording axis must match attenuation_at_offset."""
@@ -456,6 +472,8 @@ class TestAttenuationAtPosition:
         # Point at (0, 100, 0) — distance 100 from source, same as recording
         r = prop.attenuation_at_position(1000.0, (0, 100, 0))
         assert r["distance_to_source"] == pytest.approx(100.0)
+        # distance to receiver: sqrt((100-0)^2 + (0-100)^2) = sqrt(20000)
+        assert r["distance_to_receiver"] == pytest.approx(math.sqrt(20000.0))
         # Same distance as recording → 0 dB geometric, 0 dB atmospheric
         assert r["total_dB"] == pytest.approx(0.0, abs=1e-12)
 
@@ -507,6 +525,22 @@ class TestAttenuationAtPosition:
             assert r["total_dB"] == pytest.approx(
                 r["atmospheric_dB"] + r["geometric_dB"], abs=1e-12
             )
+
+    def test_call_matches_attenuation_at_position(self):
+        """prop(freq, pos) returns identical result to attenuation_at_position."""
+        prop = self._make_prop()
+        pos = (250, 0, 0)
+        expected = prop.attenuation_at_position(1000.0, pos)
+        result = prop(1000.0, pos)
+        for key in expected:
+            assert result[key] == pytest.approx(expected[key], abs=1e-12)
+
+    def test_call_vectorised(self):
+        """__call__ works with array frequencies."""
+        prop = self._make_prop()
+        freqs = np.array([500.0, 1000.0, 4000.0])
+        r = prop(freqs, (250, 0, 0))
+        assert r["total_dB"].shape == (3,)
 
 
 # ── Pressure None default tests ──────────────────────────────────
@@ -585,6 +619,41 @@ class TestAccuracyWarnings:
         # At -20°C, psat_ratio is very small, so low RH will do it
         with pytest.warns(UserWarning, match="§7.3"):
             AtmosphericPropagation(-20.0, 0.5)
+
+    def test_frequency_warning_off_by_default(self):
+        """No warning for out-of-range frequency when warn_frequency is False."""
+        prop = AtmosphericPropagation(20.0, 50.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            prop.absorption_coefficient(20.0)
+            prop.absorption_coefficient(15000.0)
+
+    def test_low_frequency_warns(self):
+        """Frequency below 50 Hz triggers warning when enabled."""
+        prop = AtmosphericPropagation(20.0, 50.0, warn_frequency=True)
+        with pytest.warns(UserWarning, match="outside the ISO 9613-1"):
+            prop.absorption_coefficient(30.0)
+
+    def test_high_frequency_warns(self):
+        """Frequency above 10 kHz triggers warning when enabled."""
+        prop = AtmosphericPropagation(20.0, 50.0, warn_frequency=True)
+        with pytest.warns(UserWarning, match="outside the ISO 9613-1"):
+            prop.absorption_coefficient(12000.0)
+
+    def test_in_range_frequency_no_warning(self):
+        """Frequency within [50, 10000] Hz does not warn even when enabled."""
+        prop = AtmosphericPropagation(20.0, 50.0, warn_frequency=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            prop.absorption_coefficient(50.0)
+            prop.absorption_coefficient(10000.0)
+            prop.absorption_coefficient(1000.0)
+
+    def test_array_with_one_out_of_range_warns(self):
+        """Array containing one out-of-range frequency triggers warning."""
+        prop = AtmosphericPropagation(20.0, 50.0, warn_frequency=True)
+        with pytest.warns(UserWarning, match="outside the ISO 9613-1"):
+            prop.absorption_coefficient(np.array([100.0, 500.0, 15000.0]))
 
 
 # ── Octave-band convenience method tests ──────────────────────────
@@ -731,3 +800,175 @@ class TestTotalAttenuation:
         result = prop.total_attenuation(1000.0, (250, 0, 0))
         assert "distance_to_source" in result
         assert result["distance_to_source"] == pytest.approx(250.0)
+
+    def test_distance_to_receiver_present(self):
+        """distance_to_receiver is always included."""
+        prop = self._make_prop()
+        result = prop.total_attenuation(1000.0, (250, 0, 0))
+        assert "distance_to_receiver" in result
+        assert result["distance_to_receiver"] == pytest.approx(50.0)
+
+
+# ── Position input flexibility tests ──────────────────────────────
+
+class TestPositionInputFlexibility:
+    """Verify that source, recording, and eval_pos accept tuple, list, and ndarray."""
+
+    def _ref_prop(self):
+        """Reference propagation with tuple positions."""
+        return AtmosphericPropagation(
+            temperature_c=20.0,
+            relative_humidity_pct=70.0,
+            source=(0.0, 0.0, 0.0),
+            recording=(200.0, 0.0, 0.0),
+        )
+
+    def test_source_as_list(self):
+        """List input accepted for source, results match tuple."""
+        prop = AtmosphericPropagation(20.0, 70.0, source=[0.0, 0.0, 0.0], recording=(200, 0, 0))
+        ref = self._ref_prop()
+        assert prop.absorption_coefficient(1000.0) == pytest.approx(
+            ref.absorption_coefficient(1000.0), rel=1e-14
+        )
+
+    def test_source_as_ndarray(self):
+        """ndarray input accepted for source, results match tuple."""
+        prop = AtmosphericPropagation(
+            20.0, 70.0, source=np.array([0.0, 0.0, 0.0]), recording=(200, 0, 0)
+        )
+        ref = self._ref_prop()
+        assert prop.absorption_coefficient(1000.0) == pytest.approx(
+            ref.absorption_coefficient(1000.0), rel=1e-14
+        )
+
+    def test_recording_as_list(self):
+        """List input accepted for recording."""
+        prop = AtmosphericPropagation(20.0, 70.0, source=(0, 0, 0), recording=[200.0, 0.0, 0.0])
+        ref = self._ref_prop()
+        assert prop.absorption_coefficient(1000.0) == pytest.approx(
+            ref.absorption_coefficient(1000.0), rel=1e-14
+        )
+
+    def test_recording_as_ndarray(self):
+        """ndarray input accepted for recording."""
+        prop = AtmosphericPropagation(
+            20.0, 70.0, source=(0, 0, 0), recording=np.array([200.0, 0.0, 0.0])
+        )
+        ref = self._ref_prop()
+        assert prop.absorption_coefficient(1000.0) == pytest.approx(
+            ref.absorption_coefficient(1000.0), rel=1e-14
+        )
+
+    def test_eval_pos_as_list(self):
+        """List works in attenuation_at_position."""
+        prop = self._ref_prop()
+        r_tuple = prop.attenuation_at_position(1000.0, (250, 0, 0))
+        r_list = prop.attenuation_at_position(1000.0, [250, 0, 0])
+        assert r_list["total_dB"] == pytest.approx(r_tuple["total_dB"], abs=1e-12)
+
+    def test_eval_pos_as_ndarray(self):
+        """ndarray works in attenuation_at_position."""
+        prop = self._ref_prop()
+        r_tuple = prop.attenuation_at_position(1000.0, (250, 0, 0))
+        r_arr = prop.attenuation_at_position(1000.0, np.array([250.0, 0.0, 0.0]))
+        assert r_arr["total_dB"] == pytest.approx(r_tuple["total_dB"], abs=1e-12)
+
+    def test_wrong_length_tuple_raises(self):
+        """len != 3 tuple raises ValueError."""
+        with pytest.raises(ValueError, match="exactly 3 elements"):
+            AtmosphericPropagation(20.0, 70.0, source=(0, 0))
+
+    def test_wrong_length_list_raises(self):
+        """len != 3 list raises ValueError."""
+        with pytest.raises(ValueError, match="exactly 3 elements"):
+            AtmosphericPropagation(20.0, 70.0, recording=[1, 2, 3, 4])
+
+    def test_wrong_shape_ndarray_raises(self):
+        """ndarray with shape != (3,) raises ValueError."""
+        with pytest.raises(ValueError, match="shape"):
+            AtmosphericPropagation(20.0, 70.0, source=np.array([[0, 0, 0]]))
+
+    def test_copy_false_shares_array(self):
+        """With copy=False, stored ndarray is the same object."""
+        src = np.array([0.0, 0.0, 0.0])
+        rec = np.array([200.0, 0.0, 0.0])
+        prop = AtmosphericPropagation(20.0, 70.0, source=src, recording=rec, copy=False)
+        assert prop.source is src
+        assert prop.recording is rec
+
+    def test_copy_true_copies_array(self):
+        """With copy=True, stored ndarray is a different object."""
+        src = np.array([0.0, 0.0, 0.0])
+        rec = np.array([200.0, 0.0, 0.0])
+        prop = AtmosphericPropagation(20.0, 70.0, source=src, recording=rec, copy=True)
+        assert prop.source is not src
+        assert prop.recording is not rec
+        np.testing.assert_array_equal(prop.source, src)
+        np.testing.assert_array_equal(prop.recording, rec)
+
+    def test_results_match_across_types(self):
+        """tuple, list, ndarray all produce identical absorption results."""
+        src_t, rec_t = (0.0, 0.0, 0.0), (200.0, 0.0, 0.0)
+        src_l, rec_l = [0.0, 0.0, 0.0], [200.0, 0.0, 0.0]
+        src_a, rec_a = np.array(src_t), np.array(rec_t)
+
+        props = [
+            AtmosphericPropagation(20.0, 70.0, source=src_t, recording=rec_t),
+            AtmosphericPropagation(20.0, 70.0, source=src_l, recording=rec_l),
+            AtmosphericPropagation(20.0, 70.0, source=src_a, recording=rec_a),
+        ]
+
+        freqs = np.array([125.0, 1000.0, 4000.0])
+        results = [p.absorption_coefficient(freqs) for p in props]
+        np.testing.assert_array_equal(results[0], results[1])
+        np.testing.assert_array_equal(results[0], results[2])
+
+
+# ── A-weighted attenuation tests ──────────────────────────────────
+
+class TestAWeightedAttenuation:
+    """Verify the a_weighted_attenuation convenience method."""
+
+    def _make_prop(self, src=(0, 0, 0), rec=(200, 0, 0)):
+        return AtmosphericPropagation(20.0, 70.0, source=src, recording=rec)
+
+    def test_returns_8_element_array(self):
+        """Result has one element per octave band."""
+        prop = self._make_prop()
+        result = prop.a_weighted_attenuation((250, 0, 0))
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (8,)
+
+    def test_equals_total_plus_a_weight(self):
+        """Result equals total_attenuation total_dB + A_WEIGHT."""
+        prop = self._make_prop()
+        pos = (250, 0, 0)
+        total = prop.total_attenuation(prop.OCTAVE_BANDS, pos)
+        expected = total["total_dB"] + AtmosphericPropagation.A_WEIGHT
+        result = prop.a_weighted_attenuation(pos)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_with_ground(self):
+        """Ground attenuation is included when provided."""
+        prop = self._make_prop()
+        ground = GroundAttenuation(
+            source_height=1.0, receiver_height=2.0, distance=200.0,
+            G_source=1.0, G_receiver=1.0, G_middle=1.0,
+        )
+        pos = (250, 0, 0)
+        total = prop.total_attenuation(prop.OCTAVE_BANDS, pos, ground=ground)
+        expected = total["total_dB"] + AtmosphericPropagation.A_WEIGHT
+        result = prop.a_weighted_attenuation(pos, ground=ground)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_a_weight_class_constant(self):
+        """A_WEIGHT has expected values and length."""
+        expected = np.array([-26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 0.9, -1.1])
+        np.testing.assert_array_equal(AtmosphericPropagation.A_WEIGHT, expected)
+        assert len(AtmosphericPropagation.A_WEIGHT) == len(AtmosphericPropagation.OCTAVE_BANDS)
+
+    def test_at_recording_reflects_only_a_weight(self):
+        """At the recording position, total_dB is 0 so result equals A_WEIGHT."""
+        prop = self._make_prop()
+        result = prop.a_weighted_attenuation((200, 0, 0))
+        np.testing.assert_array_almost_equal(result, AtmosphericPropagation.A_WEIGHT)
