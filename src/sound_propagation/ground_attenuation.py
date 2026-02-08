@@ -55,7 +55,7 @@ class GroundAttenuation:
     array([...])
     """
 
-    OCTAVE_BANDS = (63, 125, 250, 500, 1000, 2000, 4000, 8000)
+    OCTAVE_BANDS = np.array([63, 125, 250, 500, 1000, 2000, 4000, 8000])
 
     def __init__(
         self,
@@ -146,12 +146,44 @@ class GroundAttenuation:
                 f"{self.OCTAVE_BANDS}, got {bad}"
             )
 
-        result = np.empty_like(f, dtype=float)
-        for i, freq in enumerate(rounded):
-            As = self._source_or_receiver_atten(int(freq), self.Gs, self.hs)
-            Ar = self._source_or_receiver_atten(int(freq), self.Gr, self.hr)
-            Am = self._middle_atten(int(freq))
-            result[i] = As + Ar + Am
+        # Pre-compute height-dependent Table 3 factors (one per band)
+        a_s = self._a_prime(self.hs)
+        b_s = self._b_prime(self.hs)
+        c_s = self._c_prime(self.hs)
+        d_s = self._d_prime(self.hs)
+        a_r = self._a_prime(self.hr)
+        b_r = self._b_prime(self.hr)
+        c_r = self._c_prime(self.hr)
+        d_r = self._d_prime(self.hr)
+
+        # Vectorised As (source region)
+        freq_conds = [
+            rounded == 63, rounded == 125, rounded == 250,
+            rounded == 500, rounded == 1000,
+        ]
+        As = np.select(
+            freq_conds,
+            [-1.5, -1.5 + self.Gs * a_s, -1.5 + self.Gs * b_s,
+             -1.5 + self.Gs * c_s, -1.5 + self.Gs * d_s],
+            default=-1.5 * (1.0 - self.Gs),
+        )
+
+        # Vectorised Ar (receiver region)
+        Ar = np.select(
+            freq_conds,
+            [-1.5, -1.5 + self.Gr * a_r, -1.5 + self.Gr * b_r,
+             -1.5 + self.Gr * c_r, -1.5 + self.Gr * d_r],
+            default=-1.5 * (1.0 - self.Gr),
+        )
+
+        # Vectorised Am (middle region)
+        Am = np.where(
+            rounded == 63,
+            -3.0 * self.q,
+            -3.0 * self.q * (1.0 - self.Gm),
+        )
+
+        result = As + Ar + Am
 
         if scalar_input:
             return float(result[0])
@@ -255,8 +287,7 @@ class GroundAttenuation:
     def _source_or_receiver_atten(self, freq: int, G: float, h: float) -> float:
         """Compute source-region (As) or receiver-region (Ar) attenuation.
 
-        Applies Table 3 formulas, selecting the appropriate helper
-        function for each octave band.
+        Scalar helper — applies Table 3 formulas for a single frequency.
 
         Parameters
         ----------
@@ -287,7 +318,7 @@ class GroundAttenuation:
             return -1.5 * (1.0 - G)
 
     def _middle_atten(self, freq: int) -> float:
-        """Compute middle-region attenuation Am.
+        """Compute middle-region attenuation Am (scalar).
 
         Parameters
         ----------
@@ -300,12 +331,10 @@ class GroundAttenuation:
             Am in dB.  At 63 Hz: ``−3q``.
             At 125–8000 Hz: ``−3q(1 − Gm)``.
         """
-        q = self.q
         if freq == 63:
-            return -3.0 * q
+            return -3.0 * self.q
         else:
-            # 125–8000 Hz
-            return -3.0 * q * (1.0 - self.Gm)
+            return -3.0 * self.q * (1.0 - self.Gm)
 
     def __repr__(self) -> str:
         return (

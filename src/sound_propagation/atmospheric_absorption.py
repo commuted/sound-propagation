@@ -260,7 +260,7 @@ class AtmosphericPropagation:
         Parameters
         ----------
         frequency : float or array_like
-            Sound frequency in Hz (> 0).  Scalars and arrays are both
+            Sound frequency in Hz (≥ 0).  Scalars and arrays are both
             accepted; array input produces array-valued dict entries
             for the frequency-dependent keys.
         distance_offset : float
@@ -321,7 +321,7 @@ class AtmosphericPropagation:
         Parameters
         ----------
         frequency : float or array_like
-            Sound frequency in Hz (> 0).
+            Sound frequency in Hz (≥ 0).
         eval_pos : tuple, list, or np.ndarray
             (x, y, z) position of the evaluation point in metres.
 
@@ -368,7 +368,7 @@ class AtmosphericPropagation:
         Parameters
         ----------
         frequency : float or array_like
-            Sound frequency in Hz (> 0).  When *ground* is provided,
+            Sound frequency in Hz (≥ 0).  When *ground* is provided,
             frequencies must be standard octave-band centre frequencies
             (63, 125, 250, 500, 1000, 2000, 4000, 8000 Hz).
         eval_pos : tuple, list, or np.ndarray
