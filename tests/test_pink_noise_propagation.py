@@ -114,7 +114,7 @@ def _apply_stft_filter(signal, eval_distance):
 def _apply_fir_filter(signal, eval_distance):
     """Run the FIR filter pipeline for a given evaluation distance."""
     prop = _make_prop()
-    fir, _, _ = design_propagation_filter(
+    fir, _, _, _ = design_propagation_filter(
         SAMPLE_RATE, FIR_NUMTAPS, prop, eval_distance
     )
     filtered = fftconvolve(signal, fir, mode="same")

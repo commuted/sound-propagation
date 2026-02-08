@@ -65,6 +65,12 @@ def parse_args():
         help="FIR filter length (default: sample rate, giving ~1 Hz resolution). "
              "Must be odd; even values are incremented by 1.",
     )
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
+        help="Remove geometric spreading from the FIR filter and report it "
+             "as a separate scalar gain coefficient.",
+    )
     return parser.parse_args()
 
 
@@ -88,7 +94,7 @@ def write_wav(path, sr, data):
     wavfile.write(path, sr, (data * 32767).astype(np.int16))
 
 
-def design_propagation_filter(sr, numtaps, prop, distance):
+def design_propagation_filter(sr, numtaps, prop, distance, normalize=False):
     """Design an FIR filter matching the ISO 9613 attenuation curve.
 
     Parameters
@@ -102,6 +108,9 @@ def design_propagation_filter(sr, numtaps, prop, distance):
         Configured propagation model.
     distance : float
         Evaluation distance in metres.
+    normalize : bool
+        If True, exclude geometric spreading from the FIR filter and
+        return it separately as a scalar gain.
 
     Returns
     -------
@@ -111,6 +120,8 @@ def design_propagation_filter(sr, numtaps, prop, distance):
         Frequency points used for the design (Hz).
     ndarray
         Target gain at each frequency point (dB).
+    float
+        Geometric spreading gain in dB (0.0 when normalize is False).
     """
     nyquist = sr / 2.0
 
@@ -122,9 +133,16 @@ def design_propagation_filter(sr, numtaps, prop, distance):
 
     # Compute attenuation at every frequency point
     attenuation_db = np.zeros(n_points)
+    geometric_db = 0.0
     mask = freqs_hz > 0
     att = prop.attenuation_at_position(freqs_hz[mask], (distance, 0.0, 0.0))
-    attenuation_db[mask] = att["total_dB"]
+
+    if normalize:
+        # Use only the frequency-dependent atmospheric absorption
+        attenuation_db[mask] = att["atmospheric_dB"]
+        geometric_db = float(att["geometric_dB"])
+    else:
+        attenuation_db[mask] = att["total_dB"]
 
     # Convert dB to linear amplitude gain for firwin2
     gain_linear = 10.0 ** (attenuation_db / 20.0)
@@ -132,7 +150,7 @@ def design_propagation_filter(sr, numtaps, prop, distance):
     # firwin2 requires gain[0] at freq 0 and gain[-1] at freq 1 (Nyquist)
     fir = firwin2(numtaps, freqs_norm, gain_linear)
 
-    return fir, freqs_hz, attenuation_db
+    return fir, freqs_hz, attenuation_db, geometric_db
 
 
 def main():
@@ -184,12 +202,19 @@ def main():
     print()
 
     # Design the FIR filter
-    fir, freqs_hz, attenuation_db = design_propagation_filter(
-        sr, numtaps, prop, args.distance
+    fir, freqs_hz, attenuation_db, geometric_db = design_propagation_filter(
+        sr, numtaps, prop, args.distance, normalize=args.normalize
     )
 
+    # Report geometric spreading separately when normalized out
+    if args.normalize:
+        geometric_linear = 10.0 ** (geometric_db / 20.0)
+        print(f"Geometric spreading: {geometric_db:+.1f} dB (gain coefficient: {geometric_linear:.6f})")
+        print()
+
     # Print attenuation at key frequencies
-    print("Attenuation at key frequencies:")
+    label = "Atmospheric attenuation" if args.normalize else "Attenuation"
+    print(f"{label} at key frequencies:")
     for target_f in [125, 500, 1000, 4000]:
         idx = np.argmin(np.abs(freqs_hz - target_f))
         print(f"  {target_f:5d} Hz: {attenuation_db[idx]:+.1f} dB")
