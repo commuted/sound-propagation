@@ -6,8 +6,31 @@ build-backend = "hatchling.build"
 name = "sound-propagation"
 version = "0.1.0"
 description = "ISO 9613-1/2 atmospheric sound absorption and ground attenuation"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Ron Hinchley", email = "git-commuted@proton.me" }
+]
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = ["numpy"]
+
+[project.urls]
+Homepage = "https://github.com/commuted/sound-propagation"
+Repository = "https://github.com/commuted/sound-propagation"
+"Bug Tracker" = "https://github.com/commuted/sound-propagation/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sound_propagation"]

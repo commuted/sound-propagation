@@ -1,5 +1,3 @@
-------
-
 # ISO 9613 Propagation Toolkit
 
 A small, pure-Python library that implements the core calculations from the ISO 9613 series:
@@ -36,15 +34,14 @@ Validated against **102 data points from ISO 9613-1:1993 Table 1** spanning -20 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repo-url>
+pip install sound-propagation
+```
+
+Or install from source:
+
+```bash
+git clone https://github.com/commuted/sound-propagation.git
 cd sound-propagation
-
-# Create a virtual environment (optional but recommended)
-python3 -m venv env-sound_prop
-source env-sound_prop/bin/activate
-
-# Install in editable mode (pulls in numpy automatically)
 pip install -e .
 ```
 
